@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import win32com.client
 
@@ -89,9 +90,17 @@ def filter_job_contacts_for_invoice_file(
 ):
     """
     Filter the job contacts for the invoice file
-    """
 
-    df_job_contacts = df_job_contacts.loc[df_job_contacts['Project Number'].isin(df_invs['Project ID'])].copy()
+    Must distinguish between the two different invoice files
+        + AR file has a column 'Project ID'
+        + Lien exports file has a column 'order_no
+    """
+    if 'Project ID' in df_invs.columns:
+        df_job_contacts = df_job_contacts.loc[df_job_contacts['Project Number'].isin(df_invs['Project ID'])].copy()
+    elif 'order_no' in df_invs.columns:
+        df_job_contacts = df_job_contacts.loc[df_job_contacts['Project Number'].isin(df_invs['order_no'])].copy()
+    else:
+        raise ValueError('Project Number or order_no column not found in job contacts')
 
     return df_job_contacts
 
@@ -228,7 +237,6 @@ def append_emails_to_job_contacts(
 
     return df_job_contacts
 
-
 def filter_job_contacts_for_missing_info(
         df_job_contacts: pd.DataFrame,
 ):
@@ -251,11 +259,12 @@ def filter_job_contacts_for_missing_info(
         'Project Nickname',
         'Customer Name', 'Customer Phone',
         'Customer Address', 'Customer City', 'Customer State', 'Customer Zip',
-        'Customer Role', 'GC Name', 'GC Phone', 'GC Address', 'GC City',
-        'GC State', 'GC Zip', 'Owner Name', 'Owner Phone',
+        'Customer Role', 'GC Name', 'GC Address', 'GC City',
+        'GC State', 'GC Zip', 'Owner Name',
         'Owner Address', 'Owner City', 'Owner State',
         'Owner Zip', 'Leader', 'Leader Email'
     ]
+    
     df_job_list = df_job_list[cols]
     contact_cols = df_job_list.columns.str.contains('Owner') | df_job_list.columns.str.contains('GC')
     
@@ -264,6 +273,33 @@ def filter_job_contacts_for_missing_info(
     is_missing_values = (df_job_list.loc[:, contact_cols] == '') | (df_job_list.loc[:, contact_cols] == ' ') | df_job_list.loc[:, contact_cols].isna()
     df_jobs_missing_info = df_job_list.loc[is_missing_values.loc[is_missing_values.any(axis=1)].index].copy()
 
+    df_jobs_missing_info = df_jobs_missing_info.loc[~(df_jobs_missing_info['Customer Name'] == df_jobs_missing_info['Owner Name'])]
+    df_gc_is_customer = df_jobs_missing_info.loc[(df_jobs_missing_info['Customer Name'] == df_jobs_missing_info['GC Name'])].copy()
+    contact_cols = df_jobs_missing_info.columns.str.contains('Owner')
+    is_df_gc_is_customer_missing_values = (df_gc_is_customer.loc[:, contact_cols] == '') | (df_gc_is_customer.loc[:, contact_cols] == ' ') | df_gc_is_customer.loc[:, contact_cols].isna()
+    df_jobs_missing_info = df_jobs_missing_info.loc[df_jobs_missing_info.index.difference(df_gc_is_customer.index)]
+    df_jobs_missing_info = pd.concat([df_jobs_missing_info, df_gc_is_customer.loc[is_df_gc_is_customer_missing_values.any(axis=1)]])
+
+    assert ~(df_jobs_missing_info['Customer Name'] == df_jobs_missing_info['Owner Name']).any()
+    assert df_jobs_missing_info.loc[df_jobs_missing_info['Customer Name'] == df_jobs_missing_info['GC Name']].loc[:, df_jobs_missing_info.columns.str.contains('Owner')].isna().any(axis=1).all()
+    
+    return df_jobs_missing_info
+
+def attach_urls_to_job_contacts(
+    df_jobs_missing_info: pd.DataFrame,
+    existing_urls: pd.DataFrame
+):
+    """
+    Attach the URLs to the job contacts file
+    """
+    if not all(col in existing_urls.columns for col in ["Project Number", "URL"]):
+        raise ValueError("existing_urls DataFrame must contain only 'Project Number' and 'URL' columns")
+    
+    df_copy = df_jobs_missing_info.copy()
+    if 'URL' in df_copy.columns:
+        df_copy = df_copy.drop(columns=['URL'])
+
+    df_jobs_missing_info = pd.merge(df_copy, existing_urls, on='Project Number', how='left')
     return df_jobs_missing_info
 
 def connect_to_outlook():
@@ -277,23 +313,49 @@ def connect_to_outlook():
 
 def df_to_html_table(df: pd.DataFrame) -> str:
     """Convert DataFrame to HTML table with basic styling"""
-    df = df.where(~df.isna(), 'Missing!')
+    # Create a copy to avoid modifying the original dataframe
+
+    if df.empty:
+        return '<p>No data to display</p>'
+
+    df_copy = df.copy().reset_index(drop=True)
+    df_copy = df_copy.drop(columns=['Company'])
+    
+    # Check if URL column exists
+    has_url = 'URL' in df_copy.columns
+    if not has_url:
+        raise ValueError('URL column not found')
+        
+    # Mark missing values
+    df_copy = df_copy.where(~df_copy.isna(), 'Missing!')
 
     def style_missing(val):
         if val == 'Missing!':
             return 'background-color: yellow; color: red'
         return ''
     
-    styled_df = df.style.map(style_missing)
-    df = styled_df
+    styled_df = df_copy.style.map(style_missing)
+
+    df_copy = df_copy.set_index('Project Number')
+    
+    # Add hyperlinks to Project Number if URL column exists
+    def make_clickable(project_id):
+        if project_id in df_copy.index:
+            return f'<a href="{df_copy.loc[project_id, "URL"]}">{project_id}</a>'
+        return project_id
+    
+    styled_df = styled_df.format({'Project Number': make_clickable})
+    
     styles = """
         <style>
-            table { border-collapse: collapse; width: 100%; }
-            th, td { border: 1px solid black; padding: 8px; text-align: left; }
+            table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+            th, td { border: 1px solid black; padding: 10px; text-align: left; width: 400px; }
             th { background-color: #f2f2f2; }
+            a:hover { cursor: pointer; }
         </style>
     """
-    html_table = df.to_html(index=False)
+
+    html_table = styled_df.to_html(index=False, escape=False)
     return f"{styles}\n{html_table}"
 
 def send_outlook_email(
@@ -301,8 +363,9 @@ def send_outlook_email(
     to_address: str,
     subject: str,
     df: pd.DataFrame,
-    body_text: str = "",
-    cc_addresses: list[str] = [],
+    body_text_prescript: str = "",
+    body_text_postscript: str = "",
+    cc_addresses: list[str] = None,
 ) -> None:
     """
     Send an email through Outlook with a DataFrame displayed as an HTML table
@@ -314,22 +377,70 @@ def send_outlook_email(
         body_text: Optional text to include before the table
         cc_addresses: Optional list of email addresses to CC
     """
-    # Create Outlook application object
-    cc_addresses += ['ryan.skene@hts.com']
+    if cc_addresses is None:
+        cc_addresses = []
+    elif isinstance(cc_addresses, str):
+        cc_addresses = [cc_addresses]
+        
+    # Make a copy to avoid modifying the input parameter
+    cc_list = cc_addresses.copy()
 
     mail = outlook.CreateItem(0)  # 0 represents olMailItem
     
     # Set email properties
     mail.Subject = subject
     mail.To = to_address
-    # if cc_addresses:
-    #     mail.CC = "; ".join(cc_addresses)
+    if cc_list:
+        mail.CC = "; ".join(cc_list)
     
-    # Create HTML body with optional text and table
+    # Add the GIF as an embedded image in the HTML body
+    must_be_completed_path = os.path.join(os.path.dirname(__file__), 'static', 'Must Be Completed.png')
+    gif_path = os.path.join(os.path.dirname(__file__), 'static', 'ProjectContactsVid17s.gif')
+    customer_is_gc_path = os.path.join(os.path.dirname(__file__), 'static', 'If GC is Customer.png')
+    customer_is_owner_path = os.path.join(os.path.dirname(__file__), 'static', 'If Owner is Customer.png')
+    selections_correct_path = os.path.join(os.path.dirname(__file__), 'static', 'Selections Correct BUT.png')
+    company_profile_incomplete_path = os.path.join(os.path.dirname(__file__), 'static', 'Company Profile Incomplete.png')
+
+    # Add the image as an attachment with a Content ID
+    attachment = mail.Attachments.Add(must_be_completed_path)
+    attachment.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x3712001F", "MustBeCompleted")
+ 
+    attachment = mail.Attachments.Add(gif_path)
+    attachment.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x3712001F", "myGIF")
+
+    attachment = mail.Attachments.Add(customer_is_gc_path)
+    attachment.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x3712001F", "customer_is_gc")
+
+    attachment = mail.Attachments.Add(customer_is_owner_path)
+    attachment.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x3712001F", "customer_is_owner")
+
+    attachment = mail.Attachments.Add(selections_correct_path)
+    attachment.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x3712001F", "selections_correct")
+
+    attachment = mail.Attachments.Add(company_profile_incomplete_path)
+    attachment.PropertyAccessor.SetProperty("http://schemas.microsoft.com/mapi/proptag/0x3712001F", "company_profile_incomplete")
+
+    # Update the HTML body to include the embedded image
     html_table = df_to_html_table(df)
-    mail.HTMLBody = f"{body_text}<br><br>{html_table}"
-    
+    mail.HTMLBody = f"""
+        {body_text_prescript}<br><br>
+        {html_table}<br><br>
+        Please contact me if you have any comments / questions.<br><br>
+        <b><u>REMINDERS & TIPS:</u></b><br><br>
+        1. The top rows on the Contacts page must be completed for all projects.<br><br>
+        <img src='cid:MustBeCompleted'><br><br>
+        In most cases, the steps are as simple as below:<br><br>
+        <img src='cid:myGIF'><br><br>
+        2. Only complete Bonder if the job is bonded. Reminder that the Bonder is the bonding surety (not the customer/purchaser/owner/designer/etc.)<br><br>
+        3.	If your Customer is the GC, please still select the customer as the Main GC in the top slot.<br><br>
+        <img src='cid:customer_is_gc'><br><br>
+        4.	For Direct-to-Owner sales, please select the customer in both the Main Owner and Main GC slots.<br><br>
+        <img src='cid:customer_is_owner'><br><br>
+        On a rare occasion, the top dialog slot has been completed correctly, but the company profile is missing information, such as below:<br><br>
+        <img src='cid:selections_correct'><br><br>
+        <img src='cid:company_profile_incomplete'><br><br>
+        {body_text_postscript}
+    """
+
     # Send the email
     mail.Send()
-
-

@@ -28,7 +28,7 @@ class ContactFileFrame(ttk.Frame):
         
     def create_widgets(self):
         # Company dropdown
-        ttk.Label(self, text="Contact File:").grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(self, text="Lien Exports File:").grid(row=0, column=0, sticky=tk.W)
         self.company_dropdown = ttk.Combobox(
             self, 
             textvariable=self.company_var,
