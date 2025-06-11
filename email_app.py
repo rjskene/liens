@@ -180,7 +180,18 @@ class EmailApp(FileUploadMixin, FileUploadBase):
             state=tk.DISABLED
         )
         self.send_emails_btn.pack(side=tk.LEFT, padx=(0,10))
-        
+
+        self.second_notice_var = tk.BooleanVar()
+        self.second_notice_checkbox = ttk.Checkbutton(
+            send_emails_frame,
+            text="Second Notice",
+            variable=self.second_notice_var,
+            command=lambda: self.send_emails_btn.configure(
+                state=tk.NORMAL if self.second_notice_var.get() else tk.DISABLED
+            )
+        )
+        self.second_notice_checkbox.pack(side=tk.LEFT)
+
         self.go_live_var = tk.BooleanVar()
         self.go_live_checkbox = ttk.Checkbutton(
             send_emails_frame,
@@ -245,8 +256,12 @@ class EmailApp(FileUploadMixin, FileUploadBase):
             is_hts_or_dxs_contacts_file = 'HTS' in contacts_files.keys() or 'DXS' in contacts_files.keys()
             
             if is_lien_exports_invoice_file and is_hts_or_dxs_contacts_file:
-                messagebox.showerror("Error", "The invoice file is pulled from Lien Exports (typically for ONCO) and there areHTS/DXS contacts files")
-                return
+                response = messagebox.askyesno(
+                    "Warning",
+                    "The invoice file is pulled from Lien Exports (typically for ONCO) and there are HTS/DXS contacts files. Do you want to continue?"
+                )
+                if not response:
+                    return
 
             df_job_contacts = create_job_contacts_file(contacts_dfs)
             df_job_contacts = filter_job_contacts_for_invoice_file(df_job_contacts, df_invs)
@@ -346,9 +361,10 @@ class EmailApp(FileUploadMixin, FileUploadBase):
 
                 # Prepare email content
                 subject = "PLEASE READ: Your Projects Requiring Contact Information Updates"
+                second_notice_text = ' This is the second notification for the month. Reminder that lien notices are sent out on the 15th of the month (where applicable).' if self.second_notice_var.get() else ''
                 body_text = f"""{leader.split(' ')[0]},
 
-the following projects are missing required contact information. Please review and update where necessary (highlighted in yellow):"""
+the following projects are missing required contact information.{second_notice_text} Please review and update where necessary (highlighted in yellow):"""
                 print (leader)
                 print (projects['Leader Email'].iloc[0])
 
